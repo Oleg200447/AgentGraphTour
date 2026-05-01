@@ -1,0 +1,16 @@
+services:
+  agent_graph:
+    build: .
+    container_name: agent_graph
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    networks:
+      - travel_net
+    restart: unless-stopped
+
+networks:
+  travel_net:
+    name: travel_network
+    external: true
