@@ -24,6 +24,7 @@ class OfferGraphState(TypedDict, total=False):
     missing_fields: list[str]
     requirements_complete: bool
     confirmation_needed: bool
+    query_requested: bool
 
     offers: list[dict[str, Any]]
     teztour_ids: list[int]

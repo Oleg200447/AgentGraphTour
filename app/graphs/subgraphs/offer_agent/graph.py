@@ -11,7 +11,7 @@ from app.graphs.deps import GraphDependencies
 from app.graphs.subgraphs.offer_agent.state import OfferGraphState
 from app.schemas.tour_search import TourSearchRequest
 
-REQUIRED_FIELDS: list[str] = [
+CORE_REQUIRED_FIELDS: list[str] = [
     "data_min",
     "data_max",
     "num_adults",
@@ -20,6 +20,10 @@ REQUIRED_FIELDS: list[str] = [
     "budget",
     "countries",
     "num_nights",
+]
+
+ALL_REQUIRED_FIELDS: list[str] = [
+    *CORE_REQUIRED_FIELDS,
     "query",
 ]
 
@@ -44,6 +48,7 @@ def _normalize_state(state: OfferGraphState) -> OfferGraphState:
     s.setdefault("missing_fields", [])
     s.setdefault("requirements_complete", False)
     s.setdefault("confirmation_needed", False)
+    s.setdefault("query_requested", False)
     return s
 
 
@@ -63,32 +68,45 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 async def _extract_updates_with_llm(
     deps: GraphDependencies,
     text: str,
-    state: OfferGraphState,
+    fields_to_fill: list[str],
 ) -> dict[str, Any]:
-    if deps.agent_llm is None:
+    if deps.agent_llm is None or not fields_to_fill:
         return {}
 
     today = date.today()
+    field_descriptions = {
+        "data_min": "data_min (YYYY-MM-DD или null)",
+        "data_max": "data_max (YYYY-MM-DD или null)",
+        "num_adults": "num_adults (int или null)",
+        "num_childs": "num_childs (int или null)",
+        "birthdays": "birthdays (массив YYYY-MM-DD)",
+        "budget": "budget (float или null)",
+        "countries": "countries (массив строк)",
+        "num_nights": "num_nights (массив int)",
+    }
+    ordered_fields = [field for field in CORE_REQUIRED_FIELDS if field in fields_to_fill]
+    if not ordered_fields:
+        return {}
+
+    fields_block = "\n".join(f"- {field_descriptions[field]}" for field in ordered_fields)
     prompt = f"""
-Ты извлекаешь параметры подбора тура из сообщения пользователя.
-Верни ТОЛЬКО JSON-объект, без markdown и лишнего текста.
+        Ты — AI-ассистент туристического агентства. Твоя задача — точно извлекать параметры подбора тура из сообщения пользователя.
 
-Допустимые ключи:
-- data_min (YYYY-MM-DD или null)
-- data_max (YYYY-MM-DD или null)
-- num_adults (int или null)
-- num_childs (int или null)
-- birthdays (массив YYYY-MM-DD)
-- budget (float или null)
-- countries (массив строк)
-- num_nights (массив int)
-- query (строка или null)
+        ПРАВИЛА ИЗВЛЕЧЕНИЯ:
+        1. Извлекай данные только для тех ключей, которые перечислены в блоке "ОЖИДАЕМЫЕ КЛЮЧИ".
+        2. Если в сообщении нет явной информации для ключа — обязательно ставь `null` (или `[]` для списков). Запрещено выдумывать параметры или брать их "из головы".
+        3. Значения стран должны строго соответствовать списку: ["Турция", "Египет", "Китай", "Таиланд", "Грузия"]. Если пользователь называет другую страну, игнорируй ее (ставь null или не добавляй в список).
+        4. Все даты должны быть в формате YYYY-MM-DD. 
+        5. ТЕКУЩАЯ ДАТА: {today.isoformat()}. Если пользователь использует относительное время ("завтра", "через неделю", "в конце месяца"), вычисли точную дату на основе текущей.
 
-Если в сообщении нет данных по ключу — ставь null, либо [] для массивов.
-Сегодня: {today.isoformat()}.
-Текущее состояние: {json.dumps(state, ensure_ascii=False, default=str)}
-Сообщение пользователя: {text}
-""".strip()
+        ОЖИДАЕМЫЕ КЛЮЧИ (сейчас нужно заполнить только их):
+        {fields_block}
+
+        Сообщение пользователя: "{text}"
+
+        ВЫВОД:
+        Верни строго валидный JSON-объект. Не добавляй никаких пояснений до или после JSON. Не используй markdown-разметку (например, блоки ```json).
+    """.strip()
     try:
         ai_msg = await deps.agent_llm.ainvoke(prompt)
     except Exception:
@@ -131,9 +149,6 @@ def _extract_updates_heuristic(text: str, state: OfferGraphState) -> dict[str, A
         else:
             updates["data_max"] = date_tokens[0]
 
-    if "тур" in lower or "отел" in lower or "hotel" in lower:
-        updates["query"] = text.strip()
-
     countries_match = re.search(r"(?:в|страна|страны)\s+([A-Za-zА-Яа-я,\s-]{3,})", text)
     if countries_match:
         raw = countries_match.group(1)
@@ -156,10 +171,11 @@ def _merge_updates(state: OfferGraphState, updates: dict[str, Any]) -> OfferGrap
     return s
 
 
-def _compute_missing_fields(state: OfferGraphState) -> list[str]:
+def _compute_missing_fields(state: OfferGraphState, *, include_query: bool = True) -> list[str]:
     missing: list[str] = []
+    required_fields = ALL_REQUIRED_FIELDS if include_query else CORE_REQUIRED_FIELDS
 
-    for field in REQUIRED_FIELDS:
+    for field in required_fields:
         value = state.get(field)
         if field in {"countries", "num_nights"}:
             if not isinstance(value, list) or not value:
@@ -235,6 +251,14 @@ def _render_requirements_summary(state: OfferGraphState) -> str:
     )
 
 
+def _render_query_request_message() -> str:
+    return (
+        "Основные параметры собраны.\n"
+        "Теперь отдельно опишите, что хотелось бы видеть в отеле "
+        "(например: первая линия, семейный отель, аквапарк, спокойный район и т.д.)."
+    )
+
+
 def _wants_search(text: str) -> bool:
     lower = text.lower()
     return any(token in lower for token in ["покажи варианты", "подбери", "найди", "искать", "варианты"])
@@ -256,13 +280,26 @@ async def _route_with_llm(deps: GraphDependencies, state: OfferGraphState) -> st
     if deps.router_llm is None:
         return None
 
-    prompt = (
-        "Ты роутер подграфа offer_agent. Верни только один токен: "
-        "collect | search_first_three | show_next_three | show_hotel_details.\n"
-        f"Текущее состояние: requirements_complete={state.get('requirements_complete')}, "
-        f"cursor={state.get('cursor')}, teztour_ids={len(state.get('teztour_ids', []))}.\n"
-        f"Сообщение пользователя: {state.get('latest_user_text', '')}"
-    )
+    prompt = f"""
+        Ты — строгий логический маршрутизатор (роутер) диалога по подбору туров.
+        Твоя задача — проанализировать сообщение пользователя и текущее состояние системы, а затем вернуть СТРОГО ОДИН токен из списка: [collect, search_first_three, show_next_three, show_hotel_details].
+
+        ПРАВИЛА ВЫБОРА:
+        1. "collect" — выбирай, если requirements_complete=False, либо если пользователь отвечает на уточняющие вопросы по параметрам тура или хочет их изменить.
+        2. "search_first_three" — выбирай, если requirements_complete=True И пользователь явно просит начать поиск (например, "ищи", "покажи варианты", "давай").
+        3. "show_next_three" — выбирай, если пользователь просит показать еще варианты (например, "еще", "дальше", "следующие") И teztour_ids > 0.
+        4. "show_hotel_details" — выбирай, если пользователь просит подробности про конкретный отель (например, "расскажи про первый", "подробно про 12345").
+        5. Если ни одно правило не подходит, по умолчанию возвращай "collect".
+
+        Текущее состояние системы:
+        - requirements_complete: {state.get('requirements_complete')}
+        - cursor: {state.get('cursor')}
+        - Найдено отелей (teztour_ids): {len(state.get('teztour_ids', []))}
+
+        Сообщение пользователя: "{state.get('latest_user_text', '')}"
+
+        Ответ (только один токен, без кавычек и точек):
+    """.strip()
     try:
         ai_msg = await deps.router_llm.ainvoke(prompt)
     except Exception:
@@ -281,7 +318,7 @@ async def _resolve_route(deps: GraphDependencies, state: OfferGraphState) -> str
     llm_route = await _route_with_llm(deps, state)
     if llm_route:
         return llm_route
-
+    
     text = str(state.get("latest_user_text", ""))
     if _wants_next(text) and state.get("teztour_ids"):
         return "show_next_three"
@@ -344,11 +381,48 @@ async def build_offer_agent_graph(deps: GraphDependencies):
 
     async def collect_or_edit_requirements_node(state: OfferGraphState) -> OfferGraphState:
         s = _normalize_state(state)
-        user_text = str(s.get("latest_user_text", ""))
+        user_text = str(s.get("latest_user_text", "")).strip()
 
-        llm_updates = await _extract_updates_with_llm(deps, user_text, s)
+        if s.get("query_requested") and not _as_non_empty_str(s.get("query")):
+            if not user_text or _wants_search(user_text):
+                return {
+                    **s,
+                    "missing_fields": ["query"],
+                    "requirements_complete": False,
+                    "confirmation_needed": False,
+                    "query_requested": True,
+                    "assistant_response_text": _render_query_request_message(),
+                }
+
+            next_state = _merge_updates(
+                s,
+                {
+                    "query": user_text,
+                    "query_requested": False,
+                },
+            )
+            summary = _render_requirements_summary(next_state)
+            return {
+                **next_state,
+                "missing_fields": [],
+                "requirements_complete": True,
+                "confirmation_needed": True,
+                "query_requested": False,
+                "assistant_response_text": summary,
+            }
+
+        fields_to_fill = _compute_missing_fields(s, include_query=False)
+        llm_updates = await _extract_updates_with_llm(deps, user_text, fields_to_fill)
         heuristic_updates = _extract_updates_heuristic(user_text, s)
-        merged_updates = {**llm_updates, **heuristic_updates}
+        
+        merged_updates = dict(llm_updates)
+
+        for key, value in heuristic_updates.items():
+            if key == "countries":
+                if not merged_updates.get("countries"):
+                    merged_updates[key] = value
+            else:
+                merged_updates[key] = value
 
         if "data_min" not in merged_updates and "data_min" not in s:
             merged_updates["data_min"] = date.today().isoformat()
@@ -356,7 +430,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             merged_updates["data_max"] = (date.today() + timedelta(days=90)).isoformat()
 
         next_state = _merge_updates(s, merged_updates)
-        missing = _compute_missing_fields(next_state)
+        missing = _compute_missing_fields(next_state, include_query=False)
 
         if missing:
             response = (
@@ -369,7 +443,18 @@ async def build_offer_agent_graph(deps: GraphDependencies):
                 "missing_fields": missing,
                 "requirements_complete": False,
                 "confirmation_needed": False,
+                "query_requested": False,
                 "assistant_response_text": response,
+            }
+
+        if not _as_non_empty_str(next_state.get("query")):
+            return {
+                **next_state,
+                "missing_fields": ["query"],
+                "requirements_complete": False,
+                "confirmation_needed": False,
+                "query_requested": True,
+                "assistant_response_text": _render_query_request_message(),
             }
 
         summary = _render_requirements_summary(next_state)
@@ -378,16 +463,25 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             "missing_fields": [],
             "requirements_complete": True,
             "confirmation_needed": True,
+            "query_requested": False,
             "assistant_response_text": summary,
         }
 
     async def search_first_three_node(state: OfferGraphState) -> OfferGraphState:
         s = _normalize_state(state)
-        missing = _compute_missing_fields(s)
+        missing = _compute_missing_fields(s, include_query=True)
         if missing:
+            if missing == ["query"]:
+                return {
+                    "missing_fields": missing,
+                    "requirements_complete": False,
+                    "query_requested": True,
+                    "assistant_response_text": _render_query_request_message(),
+                }
             return {
                 "missing_fields": missing,
                 "requirements_complete": False,
+                "query_requested": "query" in missing,
                 "assistant_response_text": (
                     "Пока не могу выполнить подбор, не хватает параметров:\n"
                     f"{_missing_fields_to_ru(missing)}"
@@ -403,7 +497,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             "budget": s.get("budget"),
             "countries": s.get("countries", []),
             "num_nights": s.get("num_nights", []),
-            "query": _as_non_empty_str(s.get("query")) or str(s.get("latest_user_text", "")).strip(),
+            "query": _as_non_empty_str(s.get("query")),
         }
 
         try:
