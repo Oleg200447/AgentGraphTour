@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.schemas.api import IncomingMessageRequest, IncomingMessageResponse
 from app.services.agent_runtime import AgentRuntime
@@ -10,7 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/messages/incoming", response_model=IncomingMessageResponse)
-async def incoming_message(payload: IncomingMessageRequest, request: Request) -> IncomingMessageResponse:
+async def incoming_message(
+    payload: IncomingMessageRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> IncomingMessageResponse:
     logger.debug(
         "Incoming message received",
         extra={"user_id": payload.user_id, "message_length": len(payload.message)},
@@ -21,9 +25,10 @@ async def incoming_message(payload: IncomingMessageRequest, request: Request) ->
         logger.warning("Agent runtime is not initialized")
         raise HTTPException(status_code=500, detail="Agent runtime is not initialized")
 
-    result = await runtime.handle_message(payload)
-    logger.info("Incoming message processed", extra={"thread_id": result.thread_id})
-    return IncomingMessageResponse(thread_id=result.thread_id, response_text=result.response_text)
+    background_tasks.add_task(runtime.handle_message_background, payload)
+    thread_id = payload.user_id
+    logger.info("Incoming message accepted", extra={"thread_id": thread_id})
+    return IncomingMessageResponse(thread_id=thread_id)
 
 
 @router.post("/debug/callback")

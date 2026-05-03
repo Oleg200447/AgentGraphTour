@@ -10,11 +10,12 @@ class IncomingMessageRequest(BaseModel):
 class CallbackMessagePayload(BaseModel):
     user_id: str
     thread_id: str
-    text: str
+    status: str = "success"
+    text: str | None = None
+    error: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 
 class IncomingMessageResponse(BaseModel):
     status: str = "accepted"
     thread_id: str
-    response_text: str

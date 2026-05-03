@@ -95,3 +95,35 @@ class AgentRuntime:
             logger.debug("Callback skipped due to debug flag", extra={"thread_id": thread_id})
 
         return AgentRuntimeResult(thread_id=thread_id, response_text=response_text)
+
+    async def handle_message_background(self, payload: IncomingMessageRequest) -> None:
+        thread_id = payload.user_id
+        try:
+            await self.handle_message(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Background message processing failed",
+                extra={"thread_id": thread_id, "user_id": payload.user_id},
+            )
+
+            error_text = str(exc).strip() or exc.__class__.__name__
+            callback_payload = CallbackMessagePayload(
+                user_id=payload.user_id,
+                thread_id=thread_id,
+                status="error",
+                error=error_text,
+                meta={"agent": "runtime"},
+            )
+
+            if self.debug_skip_callback:
+                logger.debug("Callback skipped due to debug flag", extra={"thread_id": thread_id})
+                return
+
+            try:
+                await self.callback_sender.send(payload.reply_url, callback_payload.model_dump(mode="json"))
+                logger.info("Error callback sent", extra={"thread_id": thread_id})
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to send error callback",
+                    extra={"thread_id": thread_id, "user_id": payload.user_id},
+                )
