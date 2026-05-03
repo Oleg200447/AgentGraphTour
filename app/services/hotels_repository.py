@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import asyncpg
 
 from app.schemas.hotel import HotelBrief, HotelDetails
+
+logger = logging.getLogger(__name__)
 
 
 class HotelsRepository:
@@ -11,6 +15,7 @@ class HotelsRepository:
 
     async def get_hotels_by_teztour_ids(self, teztour_ids: list[int]) -> list[HotelBrief]:
         if not teztour_ids:
+            logger.debug("No teztour ids provided for hotel lookup")
             return []
 
         query = """
@@ -20,6 +25,11 @@ class HotelsRepository:
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, teztour_ids)
+
+        logger.debug(
+            "Fetched hotels by teztour ids",
+            extra={"requested_count": len(teztour_ids), "fetched_count": len(rows)},
+        )
 
         by_id = {
             int(row["teztour_id"]): HotelBrief(
@@ -43,7 +53,10 @@ class HotelsRepository:
             row = await conn.fetchrow(query, hotel_id)
 
         if row is None:
+            logger.info("Hotel details not found by hotel_id", extra={"hotel_id": hotel_id})
             return None
+
+        logger.debug("Hotel details found by hotel_id", extra={"hotel_id": hotel_id})
 
         return HotelDetails(
             hotel_id=int(row["hotel_id"]),
@@ -63,7 +76,10 @@ class HotelsRepository:
             row = await conn.fetchrow(query, teztour_id)
 
         if row is None:
+            logger.info("Hotel details not found by teztour_id", extra={"teztour_id": teztour_id})
             return None
+
+        logger.debug("Hotel details found by teztour_id", extra={"teztour_id": teztour_id})
 
         return HotelDetails(
             hotel_id=int(row["hotel_id"]),

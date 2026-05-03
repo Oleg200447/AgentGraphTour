@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -7,6 +8,8 @@ from langgraph.graph import END, START, StateGraph
 
 from app.graphs.deps import GraphDependencies
 from app.graphs.main_graph.state import MainGraphState
+
+logger = logging.getLogger(__name__)
 
 
 def _looks_like_offer_request(text: str) -> bool:
@@ -103,6 +106,7 @@ def _extract_text_from_agent_result(result: dict[str, Any]) -> str | None:
 
 async def _route_with_llm(router_llm: Any | None, message: str) -> str | None:
     if router_llm is None:
+        logger.debug("Router LLM is unavailable, fallback routing will be used")
         return None
 
     prompt = (
@@ -116,6 +120,7 @@ async def _route_with_llm(router_llm: Any | None, message: str) -> str | None:
     try:
         ai_msg = await router_llm.ainvoke(prompt)
     except Exception:
+        logger.exception("Router LLM invocation failed")
         return None
 
     content = getattr(ai_msg, "content", "")
@@ -138,6 +143,7 @@ async def build_main_graph(deps: GraphDependencies):
         text = str(state.get("latest_user_text", ""))
         routed = await _route_with_llm(deps.router_llm, text)
         if routed is None:
+            logger.debug("Applying heuristic routing fallback")
             if _looks_like_company_request(text):
                 routed = "company"
             elif _looks_like_tourism_general(text):
@@ -147,6 +153,7 @@ async def build_main_graph(deps: GraphDependencies):
             else:
                 routed = "other"
 
+        logger.info("Main graph route selected", extra={"route": routed})
         messages = state.get("messages", [])
         return {
             "main_route": routed,
@@ -156,19 +163,24 @@ async def build_main_graph(deps: GraphDependencies):
     async def offer_subgraph_node(state: MainGraphState) -> MainGraphState:
         offer_graph = deps.offer_graph
         if offer_graph is None:
+            logger.error("Offer subgraph is not initialized")
             return {
                 "assistant_response_text": "Offer subgraph не инициализирован.",
             }
 
         result = await offer_graph.ainvoke(dict(state))
         if not isinstance(result, dict):
+            logger.warning("Offer subgraph returned non-dict result")
             return {"assistant_response_text": "Ошибка выполнения offer subgraph."}
+
+        logger.debug("Offer subgraph completed")
         result.setdefault("response_agent", "offer_agent")
         return result
 
     async def tourism_subgraph_node(state: MainGraphState) -> MainGraphState:
         tourism_graph = deps.tourism_graph
         if tourism_graph is None:
+            logger.error("Tourism subgraph is not initialized")
             return {
                 "assistant_response_text": "Tourism subgraph не инициализирован.",
                 "response_agent": "tourism_agent",
@@ -193,12 +205,14 @@ async def build_main_graph(deps: GraphDependencies):
 
         result = await tourism_graph.ainvoke({"messages": graph_messages})
         if not isinstance(result, dict):
+            logger.warning("Tourism subgraph returned non-dict result")
             return {
                 "assistant_response_text": "Ошибка выполнения tourism subgraph.",
                 "response_agent": "tourism_agent",
             }
 
         response_text = _extract_text_from_agent_result(result) or "Не удалось сформировать ответ по туризму."
+        logger.debug("Tourism subgraph completed")
         return {
             "assistant_response_text": response_text,
             "response_agent": "tourism_agent",
@@ -207,6 +221,7 @@ async def build_main_graph(deps: GraphDependencies):
     async def company_info_node(state: MainGraphState) -> MainGraphState:
         user_text = str(state.get("latest_user_text", "")).strip()
         if deps.agent_llm is None:
+            logger.warning("Company info node is unavailable because agent_llm is None")
             return {
                 "assistant_response_text": "Сервис ответов по турфирме сейчас недоступен.",
                 "response_agent": "company_info",
@@ -222,6 +237,7 @@ async def build_main_graph(deps: GraphDependencies):
             )
             content = _extract_text_from_message_content(getattr(ai_msg, "content", ""))
         except Exception:
+            logger.exception("Company info LLM invocation failed")
             content = "Не удалось подготовить ответ по запросу о турфирме."
 
         return {

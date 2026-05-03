@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date, timedelta
 from typing import Any
@@ -10,6 +11,8 @@ from langgraph.graph import END, START, StateGraph
 from app.graphs.deps import GraphDependencies
 from app.graphs.subgraphs.offer_agent.state import OfferGraphState
 from app.schemas.tour_search import TourSearchRequest
+
+logger = logging.getLogger(__name__)
 
 CORE_REQUIRED_FIELDS: list[str] = [
     "data_min",
@@ -71,6 +74,8 @@ async def _extract_updates_with_llm(
     fields_to_fill: list[str],
 ) -> dict[str, Any]:
     if deps.agent_llm is None or not fields_to_fill:
+        if deps.agent_llm is None:
+            logger.debug("Offer extraction LLM is unavailable; skipping LLM updates")
         return {}
 
     today = date.today()
@@ -110,6 +115,7 @@ async def _extract_updates_with_llm(
     try:
         ai_msg = await deps.agent_llm.ainvoke(prompt)
     except Exception:
+        logger.exception("Failed to extract offer updates with LLM")
         return {}
 
     content = getattr(ai_msg, "content", "")
@@ -278,31 +284,32 @@ def _wants_details(text: str) -> bool:
 
 async def _route_with_llm(deps: GraphDependencies, state: OfferGraphState) -> str | None:
     if deps.router_llm is None:
+        logger.debug("Offer router LLM is unavailable, heuristic routing will be used")
         return None
 
     prompt = f"""
-        Ты — строгий логический маршрутизатор (роутер) диалога по подбору туров.
-        Твоя задача — проанализировать сообщение пользователя и текущее состояние системы, а затем вернуть СТРОГО ОДИН токен из списка: [collect, search_first_three, show_next_three, show_hotel_details].
+        Ты — бездушный конечный автомат (маршрутизатор). Твоя единственная задача — применять правила IF/THEN. ЗАПРЕЩЕНО использовать "здравый смысл" или додумывать логику.
 
-        ПРАВИЛА ВЫБОРА:
-        1. "collect" — выбирай, если requirements_complete=False, либо если пользователь отвечает на уточняющие вопросы по параметрам тура или хочет их изменить.
-        2. "search_first_three" — выбирай, если requirements_complete=True И пользователь явно просит начать поиск (например, "ищи", "покажи варианты", "давай").
-        3. "show_next_three" — выбирай, если пользователь просит показать еще варианты (например, "еще", "дальше", "следующие") И teztour_ids > 0.
-        4. "show_hotel_details" — выбирай, если пользователь просит подробности про конкретный отель (например, "расскажи про первый", "подробно про 12345").
-        5. Если ни одно правило не подходит, по умолчанию возвращай "collect".
+        ПРАВИЛА:
+        1. Верни "collect", ЕСЛИ requirements_complete == False.
+        2. Верни "search_first_three", ЕСЛИ requirements_complete == True И пользователь пишет фразы вроде "покажи варианты", "ищи", "давай". (ВНИМАНИЕ: Если teztour_ids == 0, это НОРМАЛЬНО для этого шага, так как поиск еще не запускался!).
+        3. Верни "show_next_three", ЕСЛИ пользователь просит "еще/дальше" И teztour_ids > 0.
+        4. Верни "show_hotel_details", ЕСЛИ пользователь просит детали конкретного отеля.
+        5. Верни "collect" во всех остальных непонятных случаях.
 
-        Текущее состояние системы:
-        - requirements_complete: {state.get('requirements_complete')}
-        - cursor: {state.get('cursor')}
-        - Найдено отелей (teztour_ids): {len(state.get('teztour_ids', []))}
+        ТЕКУЩЕЕ СОСТОЯНИЕ:
+        - requirements_complete == {state.get('requirements_complete')}
+        - cursor == {state.get('cursor')}
+        - teztour_ids == {len(state.get('teztour_ids', []))}
 
-        Сообщение пользователя: "{state.get('latest_user_text', '')}"
+        СООБЩЕНИЕ: "{state.get('latest_user_text', '')}"
 
-        Ответ (только один токен, без кавычек и точек):
+        Выведи строго одно слово без кавычек, скобок и JSON:
     """.strip()
     try:
         ai_msg = await deps.router_llm.ainvoke(prompt)
     except Exception:
+        logger.exception("Offer router LLM invocation failed")
         return None
     content = getattr(ai_msg, "content", "")
     if not isinstance(content, str):
@@ -317,15 +324,21 @@ async def _route_with_llm(deps: GraphDependencies, state: OfferGraphState) -> st
 async def _resolve_route(deps: GraphDependencies, state: OfferGraphState) -> str:
     llm_route = await _route_with_llm(deps, state)
     if llm_route:
+        logger.debug("Offer route selected by LLM", extra={"route": llm_route})
         return llm_route
     
     text = str(state.get("latest_user_text", ""))
     if _wants_next(text) and state.get("teztour_ids"):
+        logger.debug("Offer route selected by heuristic", extra={"route": "show_next_three"})
         return "show_next_three"
     if _wants_details(text):
+        logger.debug("Offer route selected by heuristic", extra={"route": "show_hotel_details"})
         return "show_hotel_details"
     if _wants_search(text) and state.get("requirements_complete"):
+        logger.debug("Offer route selected by heuristic", extra={"route": "search_first_three"})
         return "search_first_three"
+
+    logger.debug("Offer route selected by heuristic", extra={"route": "collect"})
     return "collect"
 
 
@@ -374,9 +387,12 @@ async def _render_hotels_page(
 
 
 async def build_offer_agent_graph(deps: GraphDependencies):
+    logger.info("Building offer graph")
+
     async def router_node(state: OfferGraphState) -> OfferGraphState:
         s = _normalize_state(state)
         route_target = await _resolve_route(deps, s)
+        logger.info("Offer graph route selected", extra={"route": route_target})
         return {"route_target": route_target}
 
     async def collect_or_edit_requirements_node(state: OfferGraphState) -> OfferGraphState:
@@ -433,6 +449,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         missing = _compute_missing_fields(next_state, include_query=False)
 
         if missing:
+            logger.debug("Offer requirements are incomplete", extra={"missing_fields": missing})
             response = (
                 "Нужны дополнительные данные для подбора тура.\n"
                 f"Не хватает:\n{_missing_fields_to_ru(missing)}\n\n"
@@ -448,6 +465,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             }
 
         if not _as_non_empty_str(next_state.get("query")):
+            logger.debug("Offer requirements complete but query is missing")
             return {
                 **next_state,
                 "missing_fields": ["query"],
@@ -458,6 +476,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             }
 
         summary = _render_requirements_summary(next_state)
+        logger.info("Offer requirements collected successfully")
         return {
             **next_state,
             "missing_fields": [],
@@ -471,6 +490,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         s = _normalize_state(state)
         missing = _compute_missing_fields(s, include_query=True)
         if missing:
+            logger.debug("Search requested with missing fields", extra={"missing_fields": missing})
             if missing == ["query"]:
                 return {
                     "missing_fields": missing,
@@ -503,6 +523,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         try:
             request_payload = TourSearchRequest.model_validate(payload)
         except Exception as exc:
+            logger.warning("Tour search payload validation failed", exc_info=True)
             return {
                 "assistant_response_text": (
                     "Параметры подбора не прошли валидацию сервиса. "
@@ -514,12 +535,14 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         try:
             result = await deps.tour_search_client.search(request_payload)
         except Exception as exc:
+            logger.error("Tour search service call failed", exc_info=True)
             return {
                 "assistant_response_text": f"Сервис подбора туров временно недоступен: {exc}",
             }
 
         offers = result.offers
         if not offers:
+            logger.info("Tour search returned zero offers")
             return {
                 "offers": [],
                 "teztour_ids": [],
@@ -532,6 +555,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             }
 
         teztour_ids = [int(offer.teztour_id) for offer in offers]
+        logger.info("Tour search returned offers", extra={"offers_count": len(teztour_ids)})
         response_text, next_cursor, shown = await _render_hotels_page(deps, teztour_ids, cursor=0)
 
         return {
@@ -547,6 +571,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         s = _normalize_state(state)
         teztour_ids = [int(x) for x in s.get("teztour_ids", [])]
         if not teztour_ids:
+            logger.info("Requested next hotels page without active selection")
             return {
                 "assistant_response_text": (
                     "Пока нет активной подборки. Сначала скажите «покажи варианты», "
@@ -569,6 +594,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
         hotel_id = _parse_hotel_id_from_text(text) or s.get("selected_hotel_id")
 
         if not hotel_id:
+            logger.debug("Hotel details requested without hotel_id")
             shown = s.get("shown_hotel_ids", [])
             hint = f" Например, один из показанных: {shown[:3]}" if shown else ""
             return {
@@ -579,6 +605,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
 
         details = await deps.hotels_repository.get_details_by_hotel_id(int(hotel_id))
         if details is None:
+            logger.info("Hotel details not found", extra={"hotel_id": int(hotel_id)})
             return {
                 "assistant_response_text": (
                     f"Не нашёл отель с hotel_id={hotel_id} в таблице hotels. "
@@ -591,6 +618,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             f"Подробно про hotel_id={details.hotel_id} ({details.name}):\n"
             f"{description}"
         )
+        logger.debug("Hotel details rendered", extra={"hotel_id": details.hotel_id})
         return {
             "selected_hotel_id": details.hotel_id,
             "selected_teztour_id": details.teztour_id,

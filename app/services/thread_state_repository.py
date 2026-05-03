@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any
 
@@ -8,6 +9,8 @@ import asyncpg
 from pydantic import BaseModel
 
 from app.db.postgres import validate_sql_identifier
+
+logger = logging.getLogger(__name__)
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -39,22 +42,35 @@ class ThreadStateRepository:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query)
+        logger.info("Thread state table initialized", extra={"table": self.table_name})
 
     async def load_thread_state(self, thread_id: str) -> dict[str, Any] | None:
         query = f"SELECT state_json FROM {self.table_name} WHERE thread_id = $1 LIMIT 1"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, thread_id)
         if row is None:
+            logger.debug("Thread state not found", extra={"thread_id": thread_id, "table": self.table_name})
             return None
+
         state_json = row["state_json"]
         if isinstance(state_json, dict):
+            logger.debug("Thread state loaded", extra={"thread_id": thread_id, "table": self.table_name})
             return dict(state_json)
         if isinstance(state_json, str):
             try:
                 loaded = json.loads(state_json)
                 return loaded if isinstance(loaded, dict) else None
             except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to decode thread state JSON",
+                    extra={"thread_id": thread_id, "table": self.table_name},
+                )
                 return None
+
+        logger.warning(
+            "Thread state has unsupported type",
+            extra={"thread_id": thread_id, "table": self.table_name, "state_type": type(state_json).__name__},
+        )
         return None
 
     async def save_thread_state(self, thread_id: str, state: dict[str, Any]) -> None:
@@ -68,3 +84,7 @@ class ThreadStateRepository:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, thread_id, payload_json)
+        logger.debug(
+            "Thread state saved",
+            extra={"thread_id": thread_id, "table": self.table_name, "payload_size": len(payload_json)},
+        )

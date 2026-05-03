@@ -1,6 +1,9 @@
+import logging
 import re
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 def _to_asyncpg_dsn(database_url: str) -> str:
@@ -17,4 +20,7 @@ def validate_sql_identifier(name: str) -> str:
 
 async def create_postgres_pool(database_url: str) -> asyncpg.Pool:
     dsn = _to_asyncpg_dsn(database_url)
-    return await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=10)
+    logger.debug("Creating postgres pool")
+    pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=10)
+    logger.info("Postgres pool created")
+    return pool

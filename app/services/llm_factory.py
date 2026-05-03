@@ -1,8 +1,11 @@
+import logging
 from typing import Any
 
 from langchain_openai import ChatOpenAI
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMFactory:
@@ -11,7 +14,10 @@ class LLMFactory:
 
     def _build(self, model: str, temperature: float) -> Any | None:
         if not self.settings.openrouter_api_key:
+            logger.warning("OpenRouter API key is not configured; LLM client will be disabled")
             return None
+
+        logger.debug("Building LLM client", extra={"model": model, "temperature": temperature})
         return ChatOpenAI(
             model=model,
             temperature=temperature,
