@@ -89,7 +89,8 @@ async def _extract_updates_with_llm(
         "countries": "countries (массив строк)",
         "num_nights": "num_nights (массив int)",
     }
-    ordered_fields = [field for field in CORE_REQUIRED_FIELDS if field in fields_to_fill]
+    #ordered_fields = [field for field in CORE_REQUIRED_FIELDS if field in fields_to_fill]
+    ordered_fields = CORE_REQUIRED_FIELDS
     if not ordered_fields:
         return {}
 
@@ -168,11 +169,9 @@ def _extract_updates_heuristic(text: str, state: OfferGraphState) -> dict[str, A
 def _merge_updates(state: OfferGraphState, updates: dict[str, Any]) -> OfferGraphState:
     s = dict(state)
     for key, value in updates.items():
-        if value is None:
+        if value is None or (isinstance(value, list) and not value):
             continue
-        if key in {"countries", "birthdays", "num_nights"} and isinstance(value, list):
-            s[key] = value
-            continue
+        
         s[key] = value
     return s
 
@@ -242,18 +241,20 @@ def _missing_fields_to_ru(missing: list[str]) -> str:
 
 
 def _render_requirements_summary(state: OfferGraphState) -> str:
+    countries_str = ", ".join(state.get('countries', []))
+    nights_str = ", ".join(map(str, state.get('num_nights', [])))
+
     return (
         "Собрал параметры для подбора тура:\n"
-        f"- data_min: {state.get('data_min')}\n"
-        f"- data_max: {state.get('data_max')}\n"
-        f"- num_adults: {state.get('num_adults')}\n"
-        f"- num_childs: {state.get('num_childs')}\n"
-        f"- birthdays: {state.get('birthdays', [])}\n"
-        f"- budget: {state.get('budget')}\n"
-        f"- countries: {state.get('countries', [])}\n"
-        f"- num_nights: {state.get('num_nights', [])}\n"
-        f"- query: {state.get('query')}\n\n"
-        "Если всё верно, напишите: «покажи варианты». Если нужно — пришлите правки."
+        f"Дата с: {state.get('data_min')}\n"
+        f"Дата по: {state.get('data_max')}\n"
+        f"Взрослых: {state.get('num_adults')}\n"
+        f"Детей: {state.get('num_childs')}\n"
+        f"Бюджет: {state.get('budget')}\n"
+        f"Страны: {countries_str}\n" 
+        f"Ночей: {nights_str}\n"      
+        f"Запрос: {state.get('query')}\n\n"
+        "Если всё верно, напишите: «покажи варианты»."
     )
 
 
@@ -427,8 +428,8 @@ async def build_offer_agent_graph(deps: GraphDependencies):
                 "assistant_response_text": summary,
             }
 
-        fields_to_fill = _compute_missing_fields(s, include_query=False)
-        llm_updates = await _extract_updates_with_llm(deps, user_text, fields_to_fill)
+        #fields_to_fill = _compute_missing_fields(s, include_query=False)
+        llm_updates = await _extract_updates_with_llm(deps, user_text, CORE_REQUIRED_FIELDS)
         heuristic_updates = _extract_updates_heuristic(user_text, s)
         
         merged_updates = dict(llm_updates)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from datetime import date
 
 from langchain_community.tools import DuckDuckGoSearchRun
 from langgraph.prebuilt import create_react_agent
@@ -11,12 +12,12 @@ from app.graphs.deps import GraphDependencies
 logger = logging.getLogger(__name__)
 
 
-TOURISM_AGENT_PROMPT = (
-    "Ты полезный ассистент по туризму. Отвечай на общие туристические вопросы: "
-    "погода, сезонность, популярные направления, визовые базовые рекомендации, "
-    "что посмотреть и когда лучше ехать. При необходимости используй поиск. "
-    "Отвечай кратко и по делу на русском языке."
-)
+TOURISM_AGENT_PROMPT = f"""Ты полезный ассистент по туризму. Отвечай на общие туристические вопросы: 
+                           погода, сезонность, популярные направления, визовые базовые рекомендации, 
+                           что посмотреть и когда лучше ехать. Всегда используй поиск. 
+                           Отвечай кратко и по делу на русском языке. Можешь использовать смайлики, чтобы быть более дружелюбным. НЕ СТРОЙ ТАБЛИЦЫ И ГРАФИКИ, ПИШИ ВСЁ ТЕКСТОМ.
+                           ТЕКУЩАЯ ДАТА: {date.today().isoformat()}. Если пользователь использует относительное время ("завтра", "через неделю", "в конце месяца"), вычисли точную дату на основе текущей.""".strip()      
+
 
 
 async def build_tourism_agent_graph(deps: GraphDependencies) -> Any | None:

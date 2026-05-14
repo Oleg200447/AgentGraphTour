@@ -17,8 +17,8 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_router_model: str = "openai/gpt-4o-mini"
-    openrouter_agent_model: str = "openai/gpt-4o-mini"
+    openrouter_router_model: str = "deepseek/deepseek-v4-flash"
+    openrouter_agent_model: str = "deepseek/deepseek-v4-flash"
 
     database_url: str = "postgresql+asyncpg://admin:YOUR_POSTGRES_PASSWORD@tours_db:5432/tours"
     state_table_name: str = "agent_thread_state"
