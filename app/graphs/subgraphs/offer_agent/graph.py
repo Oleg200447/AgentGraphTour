@@ -10,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.graphs.deps import GraphDependencies
 from app.graphs.subgraphs.offer_agent.state import OfferGraphState
-from app.schemas.tour_search import TourSearchRequest
+from app.schemas.tour_search import TourOffer, TourSearchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +357,7 @@ async def _render_hotels_page(
     deps: GraphDependencies,
     teztour_ids: list[int],
     cursor: int,
+    offers: list[TourOffer] | None = None,
 ) -> tuple[str, int, list[int]]:
     chunk = teztour_ids[cursor : cursor + 3]
     if not chunk:
@@ -374,12 +375,26 @@ async def _render_hotels_page(
             [],
         )
 
+    offer_by_teztour: dict[int, TourOffer] = {}
+    if offers:
+        for offer in offers:
+            offer_by_teztour[int(offer.teztour_id)] = offer
+
     lines: list[str] = ["Нашёл варианты (показываю до 3):"]
     shown_hotel_ids: list[int] = []
     for idx, hotel in enumerate(hotels, start=1):
         shown_hotel_ids.append(hotel.hotel_id)
+        offer = offer_by_teztour.get(int(hotel.teztour_id))
+        offer_line = ""
+        if offer:
+            offer_line = (
+                f"Цена: {offer.price} | "
+                f"Заезд: {offer.checkin_date.isoformat()} | "
+                f"Ночей: {offer.nights}\n"
+            )
         lines.append(
             f"{idx}. hotel_id={hotel.hotel_id} | {hotel.name}\n"
+            f"{offer_line}"
             f"Кратко: {hotel.short_description or 'Описание отсутствует.'}"
         )
     lines.append("\nЧтобы увидеть ещё три — напишите: «покажи следующие 3». ")
@@ -557,7 +572,7 @@ async def build_offer_agent_graph(deps: GraphDependencies):
 
         teztour_ids = [int(offer.teztour_id) for offer in offers]
         logger.info("Tour search returned offers", extra={"offers_count": len(teztour_ids)})
-        response_text, next_cursor, shown = await _render_hotels_page(deps, teztour_ids, cursor=0)
+        response_text, next_cursor, shown = await _render_hotels_page(deps, teztour_ids, cursor=0, offers=offers)
 
         return {
             "offers": [offer.model_dump(mode="json") for offer in offers],
@@ -581,7 +596,9 @@ async def build_offer_agent_graph(deps: GraphDependencies):
             }
 
         cursor = int(s.get("cursor", 0))
-        response_text, next_cursor, shown = await _render_hotels_page(deps, teztour_ids, cursor=cursor)
+        offers_raw = s.get("offers", [])
+        offers = [TourOffer.model_validate(o) for o in offers_raw]
+        response_text, next_cursor, shown = await _render_hotels_page(deps, teztour_ids, cursor=cursor, offers=offers)
         shown_total = list(s.get("shown_hotel_ids", [])) + shown
         return {
             "cursor": next_cursor,

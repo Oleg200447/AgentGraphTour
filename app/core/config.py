@@ -17,8 +17,8 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_router_model: str = "deepseek/deepseek-v4-flash"
-    openrouter_agent_model: str = "deepseek/deepseek-v4-flash"
+    openrouter_router_model: str = "google/gemini-2.5-flash-lite"
+    openrouter_agent_model: str = "google/gemini-2.5-flash-lite"
 
     database_url: str = "postgresql+asyncpg://admin:YOUR_POSTGRES_PASSWORD@tours_db:5432/tours"
     state_table_name: str = "agent_thread_state"
@@ -33,6 +33,9 @@ class Settings(BaseSettings):
         "Ты ассистент турфирмы. Отвечай только на вопросы о работе турфирмы, "
         "офисе, документах, процессах и обслуживании клиентов. "
         "Если данных недостаточно — честно скажи, что нужно уточнение."
+        "Турфирма работает ежедневно с 10:00 до 19:00. При желании забронировать тур возмите с собой паспорт и страховку. Если страховки нет - поможем сделать. "
+        "Для регистрации на визу необходимо воспользоваться @zxc. Для упрощенного процесса поможет ПРИГЛАШЕНИЕ."
+        "Только отвечай на вопрос ничего предлагать не нужно"
     )
 
 
